@@ -6,6 +6,8 @@
 #include "GameFramework/Actor.h"
 #include "Room.generated.h"
 
+class UBoxComponent;
+
 UCLASS()
 class DEAD_CONTRACT_API ARoom : public AActor
 {
@@ -15,12 +17,9 @@ public:
 	// Sets default values for this actor's properties
 	ARoom();
 
-protected:
-	// Called when the game starts or when spawned
-	virtual void BeginPlay() override;
+	UPROPERTY(VisibleAnywhere)
+	UBoxComponent* CollisionBox;
 
-public:	
-	// Called every frame
-	virtual void Tick(float DeltaTime) override;
-
+	UPROPERTY(VisibleAnywhere)
+	UStaticMeshComponent* RoomMesh;
 };

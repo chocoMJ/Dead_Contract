@@ -21,6 +21,8 @@ protected:
 private:
 	FVector Center;
 
+	TMap<FIntPoint, TArray<ARoom*>> Grid;
+
 	UPROPERTY(EditAnywhere)
 	float radius;
 
@@ -30,8 +32,15 @@ private:
 	UPROPERTY(EditAnywhere)
 	TSubclassOf<ARoom> RoomClass;
 
+	UPROPERTY()
+	TArray<ARoom*> Rooms;
+
 	FVector2D GetRandomPointInCircle(float radius);
 
 	void GenerateRandomMap();
+
+	void NaiveSeperateRooms();
+
+	bool AABBCollisionDetector(ARoom* RA, ARoom* RB);
 };
 
