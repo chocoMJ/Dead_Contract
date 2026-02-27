@@ -4,17 +4,9 @@
 
 #include "CoreMinimal.h"
 
-/**
- * 
- */
-class DEAD_CONTRACT_API DebugHelper
-{
-public:
-#define BENCHMARK(FuncName) \
-    { \
-        double Start = FPlatformTime::Seconds(); \
-        this->FuncName(); \
-        double End = FPlatformTime::Seconds(); \
-        UE_LOG(LogTemp, Warning, TEXT(#FuncName ": %.3f ms"), (End - Start) * 1000.0); \
-    }
-};
+void DrawTriangle(
+	UWorld* World, 
+	const FVector2D& A, 
+	const FVector2D& B, 
+	const FVector2D& C, 
+	float Z = 0.f);
