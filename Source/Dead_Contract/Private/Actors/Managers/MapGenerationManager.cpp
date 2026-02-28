@@ -140,6 +140,7 @@ TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVec
 		return TArray<FTriangle>();
 	}
 
+	//step1. super triangle 구하기
 	//모든 점을 포함하는 바운딩 박스 구하기
 	float MinX = Nodes[0].X, MinY = Nodes[0].Y;
 	float MaxX = Nodes[0].X, MaxY = Nodes[0].Y;
@@ -169,9 +170,91 @@ TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVec
 	CalculateCircumcircle(SuperTriangle, AllPoints);
 	Triangles.Add(SuperTriangle); // 초기 삼각형으로 추가!
 
-	return Triangles;
+	//step 2. 각점을 하나씩 추가함.
+	for (int32 PointIdx = 0; PointIdx < Nodes.Num(); ++PointIdx)
+	{
+		FVector2D Point = Nodes[PointIdx];
+		TArray<FRoomEdge> Polygon;
+		TArray<int32> TrianglesToRemove;
 
-	//각점 추가 로직 필요
+		//2.1 Node를 포함하는 삼각형 찾기
+		for (int32 i = 0; i < Triangles.Num(); ++i)
+		{
+			if (IsPointInCircumcircle(Triangles[i], Point))
+			{
+				FRoomEdge Edge0(Triangles[i].Vertex0, Triangles[i].Vertex1, 0.f);
+				FRoomEdge Edge1(Triangles[i].Vertex1, Triangles[i].Vertex2, 0.f);
+				FRoomEdge Edge2(Triangles[i].Vertex2, Triangles[i].Vertex0, 0.f);
+
+				Polygon.Add(Edge0);
+				Polygon.Add(Edge1);
+				Polygon.Add(Edge2);
+
+				TrianglesToRemove.Add(i);
+			}
+		}
+
+		// 2.2. Bad triangles 제거
+		for (int32 i = TrianglesToRemove.Num() - 1; i >= 0; --i)
+		{
+			Triangles.RemoveAt(TrianglesToRemove[i]);
+		}
+
+		// 2.3. 공유간선 제거
+		TArray<FRoomEdge> UniqueEdges;
+		for (const FRoomEdge& Edge : Polygon)
+		{
+			int32 DuplicateCount = 0;
+			for (const FRoomEdge& Other : Polygon)
+			{
+				if (Edge == Other)
+				{
+					DuplicateCount++;
+				}
+			}
+
+			// 한 번만 등장하는 간선만 고려
+			if (DuplicateCount == 1)
+			{
+				bool AlreadyAdded = false;
+				for (const FRoomEdge& Unique : UniqueEdges)
+				{
+					if (Edge == Unique)
+					{
+						AlreadyAdded = true;
+						break;
+					}
+				}
+
+				if (!AlreadyAdded)
+				{
+					UniqueEdges.Add(Edge);
+				}
+			}
+		}
+
+		// 2.4. 새로운 삼각형 생성
+		for (const FRoomEdge& Edge : UniqueEdges)
+		{
+			FTriangle NewTriangle(Edge.RoomIndexA, Edge.RoomIndexB, PointIdx);
+			CalculateCircumcircle(NewTriangle, AllPoints);
+			Triangles.Add(NewTriangle);
+		}
+	}
+
+	// 3. Super Triangle 정점을 포함하는 삼각형 제거
+	TArray<FTriangle> FinalTriangles;
+	for (const FTriangle& Triangle : Triangles)
+	{
+		if (!Triangle.ContainsVertex(SuperVertex0) &&
+			!Triangle.ContainsVertex(SuperVertex1) &&
+			!Triangle.ContainsVertex(SuperVertex2))
+		{
+			FinalTriangles.Add(Triangle);
+		}
+	}
+
+	return FinalTriangles;
 }
 
 void AMapGenerationManager::CalculateCircumcircle(FTriangle& Triangle, const TArray<FVector2D>& Points)
