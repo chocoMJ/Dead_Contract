@@ -24,6 +24,10 @@ void AMapGenerationManager::BeginPlay()
 	}
 
 	TArray<FTriangle> Triangles = DelaunayTriangulation(RoomPositions);
+
+	TArray<FRoomEdge> DelaunayEdges = TrianglesToEdges(Triangles);
+
+	DrawEdges(DelaunayEdges);
 }
 
 FVector2D AMapGenerationManager::GetRandomPointInCircle(float _radius)
@@ -65,7 +69,7 @@ void AMapGenerationManager::GenerateRandomMap()
 void AMapGenerationManager::SeperateRooms()
 {
 	const int32 MaxIterations = 100;
-	const float PushStrength = 500.0f;
+	const float PushStrength = 100.0f;
 
 	//iter만큼 충돌감지 및 밀어내기 작업
 	for (int iter = 0; iter < MaxIterations; iter++)
@@ -123,8 +127,8 @@ bool AMapGenerationManager::AABBCollisionDetector(ARoom* RA, ARoom* RB)
 	FVector CenterB = RB->GetActorLocation();
 
 	// 두 방의 박스 크기
-	FVector ExtentA = RA->CollisionBox->GetScaledBoxExtent();
-	FVector ExtentB = RB->CollisionBox->GetScaledBoxExtent();
+	FVector ExtentA = RA->CollisionBox->GetScaledBoxExtent() + 100.f;
+	FVector ExtentB = RB->CollisionBox->GetScaledBoxExtent() + 100.f;
 
 	// AABB 충돌 검사 (2축 모두 겹쳐야 충돌)
 	bool bOverlapX = FMath::Abs(CenterA.X - CenterB.X) < (ExtentA.X + ExtentB.X);
@@ -161,9 +165,9 @@ TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVec
 
 	//바운딩박스보다 훨씬 큰 삼각형 생성
 	TArray<FVector2D> AllPoints = Nodes;
-	int32 SuperVertex0 = AllPoints.Add(FVector2D(MidX - 3.f * DMax, MidY - DMax));
-	int32 SuperVertex1 = AllPoints.Add(FVector2D(MidX, MidY + 3.f * DMax));
-	int32 SuperVertex2 = AllPoints.Add(FVector2D(MidX + 3.f * DMax, MidY - DMax));
+	int32 SuperVertex0 = AllPoints.Add(FVector2D(MidX - 10.f * DMax, MidY - DMax));
+	int32 SuperVertex1 = AllPoints.Add(FVector2D(MidX, MidY + 10.f * DMax));
+	int32 SuperVertex2 = AllPoints.Add(FVector2D(MidX + 10.f * DMax, MidY - DMax));
 
 	TArray<FTriangle> Triangles;
 	FTriangle SuperTriangle(SuperVertex0, SuperVertex1, SuperVertex2);
@@ -304,4 +308,80 @@ bool AMapGenerationManager::IsPointInCircumcircle(const FTriangle& Triangle, con
 	FVector2D center(Triangle.Circumcenter.X, Triangle.Circumcenter.Y);
 	float DistSquared = FVector2D::DistSquared(center, Point);
 	return DistSquared < Triangle.CircumradiusSquared;
+}
+
+TArray<FRoomEdge> AMapGenerationManager::TrianglesToEdges(const TArray<FTriangle>& Triangles)
+{
+	TArray<FRoomEdge> Edges;
+	TSet<FString> EdgeSet;  // 중복 방지용
+
+	// 모든 삼각형 순회
+	for (const FTriangle& Triangle : Triangles)
+	{
+		// 각 삼각형의 3개 간선 추출
+		auto AddEdge = [&](int32 A, int32 B)
+			{
+				int32 MinIdx = FMath::Min(A, B);
+				int32 MaxIdx = FMath::Max(A, B);
+				FString Key = FString::Printf(TEXT("%d-%d"), MinIdx, MaxIdx);
+
+				// 중복 체크
+				if (!EdgeSet.Contains(Key))
+				{
+					EdgeSet.Add(Key);
+
+					// 거리 계산
+					float Distance = FVector::Dist(
+						Rooms[A]->GetActorLocation(),
+						Rooms[B]->GetActorLocation()
+					);
+
+					Edges.Add(FRoomEdge(A, B, Distance));
+				}
+			};
+
+		// 삼각형의 3개 간선 추가
+		AddEdge(Triangle.Vertex0, Triangle.Vertex1);  // AB
+		AddEdge(Triangle.Vertex1, Triangle.Vertex2);  // BC
+		AddEdge(Triangle.Vertex2, Triangle.Vertex0);  // CA
+	}
+
+	return Edges;
+}
+
+void AMapGenerationManager::DrawEdges(const TArray<FRoomEdge>& Edges)
+{
+	for (int32 i = 0; i < Edges.Num(); ++i)
+	{
+		const FRoomEdge& Edge = Edges[i];
+
+		// 두 방의 위치
+		FVector StartPos = Rooms[Edge.RoomIndexA]->GetActorLocation();
+		FVector EndPos = Rooms[Edge.RoomIndexB]->GetActorLocation();
+
+		// 선 그리기
+		DrawDebugLine(
+			GetWorld(),
+			StartPos,
+			EndPos,
+			FColor::Cyan,        // 하늘색
+			false,               // Persistent (false = 시간제한 있음)
+			30.0f,               // 30초간 표시
+			0,                   // Depth priority
+			5.0f                 // 두께
+		);
+
+		// 중점에 번호 표시 (옵션)
+		FVector MidPoint = (StartPos + EndPos) / 2.0f;
+		DrawDebugString(
+			GetWorld(),
+			MidPoint,
+			FString::Printf(TEXT("E%d"), i),  // Edge 번호
+			nullptr,
+			FColor::White,
+			30.0f,
+			true,
+			1.0f
+		);
+	}
 }

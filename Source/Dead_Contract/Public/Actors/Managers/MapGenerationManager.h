@@ -94,5 +94,8 @@ private:
 	TArray<FTriangle> DelaunayTriangulation(const TArray<FVector2D>& Nodes);
 	void CalculateCircumcircle(FTriangle& Triangle, const TArray<FVector2D>& Points);
 	bool IsPointInCircumcircle(const FTriangle& Triangle, const FVector2D& Point);
+	TArray<FRoomEdge> TrianglesToEdges(const TArray<FTriangle>& Triangles);
+
+	void DrawEdges(const TArray<FRoomEdge>& Edges);
 };
 
