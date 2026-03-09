@@ -53,6 +53,20 @@ struct FTriangle
 	}
 };
 
+USTRUCT()
+struct FPrimNode
+{
+	GENERATED_BODY()
+
+	float MinDistance;
+	float DistFromStart;
+	int32 ParentIndex;
+	bool bInMST;
+
+	FPrimNode() :
+		MinDistance(MAX_flt), DistFromStart(MAX_flt), ParentIndex(-1), bInMST(false) {}
+};
+
 UCLASS()
 class DEAD_CONTRACT_API AMapGenerationManager : public AActor
 {
@@ -68,7 +82,8 @@ protected:
 private:
 	FVector Center;
 
-	TMap<FIntPoint, TArray<ARoom*>> Grid;
+	int32 StartRoomIndex;
+	int32 BossRoomIndex;
 
 	UPROPERTY(EditAnywhere)
 	float radius;
@@ -82,12 +97,16 @@ private:
 	UPROPERTY()
 	TArray<ARoom*> Rooms;
 
+	UPROPERTY()
+	TArray<FRoomEdge> DelaunayEdges;
+
+	UPROPERTY()
+	TArray<FRoomEdge> MSTEdges;
+
+	//Room 객체 랜덤 배치 및 분할
 	FVector2D GetRandomPointInCircle(float radius);
-
 	void GenerateRandomMap();
-
 	void SeperateRooms();
-
 	bool AABBCollisionDetector(ARoom* RA, ARoom* RB);
 
 	//들로네 공간분할
@@ -95,6 +114,9 @@ private:
 	void CalculateCircumcircle(FTriangle& Triangle, const TArray<FVector2D>& Points);
 	bool IsPointInCircumcircle(const FTriangle& Triangle, const FVector2D& Point);
 	TArray<FRoomEdge> TrianglesToEdges(const TArray<FTriangle>& Triangles);
+
+	//MST 계산
+	TArray<FRoomEdge> ComputeMST(int32 StartIndex);
 
 	void DrawEdges(const TArray<FRoomEdge>& Edges);
 };

@@ -25,9 +25,11 @@ void AMapGenerationManager::BeginPlay()
 
 	TArray<FTriangle> Triangles = DelaunayTriangulation(RoomPositions);
 
-	TArray<FRoomEdge> DelaunayEdges = TrianglesToEdges(Triangles);
+	DelaunayEdges = TrianglesToEdges(Triangles);
 
-	DrawEdges(DelaunayEdges);
+	MSTEdges = ComputeMST(2);
+
+	DrawEdges(MSTEdges);
 }
 
 FVector2D AMapGenerationManager::GetRandomPointInCircle(float _radius)
@@ -63,8 +65,6 @@ void AMapGenerationManager::GenerateRandomMap()
 		Rooms.Add(room);
 	}
 }
-
-
 
 void AMapGenerationManager::SeperateRooms()
 {
@@ -347,6 +347,100 @@ TArray<FRoomEdge> AMapGenerationManager::TrianglesToEdges(const TArray<FTriangle
 	}
 
 	return Edges;
+}
+
+TArray<FRoomEdge> AMapGenerationManager::ComputeMST(int32 StartIndex)
+{
+	int32 NumNodes = Rooms.Num();
+
+	TArray<FPrimNode> Nodes;
+	Nodes.SetNum(NumNodes);
+
+	// 시작 노드 설정
+	Nodes[StartIndex].MinDistance = 0.f;
+	Nodes[StartIndex].DistFromStart = 0.f;
+
+	TArray<TPair<float, int32>> Heap; //mindistance와 NodeIndex를 넣어줄 힙
+	Heap.Add(TPair<float, int32>(0.f, StartIndex));
+
+	while (Heap.Num() > 0)
+	{
+		// 힙에서 가장 가까운 노드 꺼내기
+		Heap.Sort([](const TPair<float, int32>& A, const TPair<float, int32>& B) {
+			return A.Key < B.Key;
+			});
+
+		TPair<float, int32> Top = Heap[0];
+		Heap.RemoveAt(0);
+
+		int32 CurrentIndex = Top.Value;
+
+		// 중복 처리
+		if (Nodes[CurrentIndex].bInMST) continue;
+		Nodes[CurrentIndex].bInMST = true;
+
+		// 현재 노드의 인접 간선 탐색
+		for (const FRoomEdge& Edge : DelaunayEdges)
+		{
+			int32 NeighborIndex = -1;
+
+			if (Edge.RoomIndexA == CurrentIndex)
+				NeighborIndex = Edge.RoomIndexB;
+			else if (Edge.RoomIndexB == CurrentIndex)
+				NeighborIndex = Edge.RoomIndexA;
+			else
+				continue;
+
+			// 이미 MST에 있으면 스킵
+			if (Nodes[NeighborIndex].bInMST) continue;
+
+			// 노드와 트리간 거리 갱신
+			if (Edge.Distance < Nodes[NeighborIndex].MinDistance)
+			{
+				Nodes[NeighborIndex].MinDistance = Edge.Distance;
+				Nodes[NeighborIndex].ParentIndex = CurrentIndex;
+				Nodes[NeighborIndex].DistFromStart = Nodes[CurrentIndex].DistFromStart + Edge.Distance;
+
+				Heap.Add(TPair<float, int32>(Edge.Distance, NeighborIndex));
+			}
+		}
+
+		if (Nodes[CurrentIndex].ParentIndex != -1)
+		{
+			FRoomEdge NewEdge(
+				Nodes[CurrentIndex].ParentIndex,
+				CurrentIndex,
+				Nodes[CurrentIndex].MinDistance
+			);
+			MSTEdges.Add(NewEdge);
+		}
+	}
+
+	// MST 완성 후 leaf 노드 중 가장 먼 노드 = 보스방
+	// leaf 노드를 찾기 위한 degree 계산
+	TArray<int32> Degree;
+	Degree.SetNum(NumNodes);
+
+	for (const FRoomEdge& Edge : MSTEdges)
+	{
+		Degree[Edge.RoomIndexA]++;
+		Degree[Edge.RoomIndexB]++;
+	}
+
+	// leaf 노드 중 DistFromStart 최대값 = 보스방
+	float MaxDist = 0.f;
+	BossRoomIndex = -1;
+
+	for (int32 i = 0; i < NumNodes; i++)
+	{
+		if (Degree[i] == 1 && Nodes[i].DistFromStart > MaxDist)
+		{
+			MaxDist = Nodes[i].DistFromStart;
+			BossRoomIndex = i;
+		}
+	}
+
+	return MSTEdges;
 }
 
 void AMapGenerationManager::DrawEdges(const TArray<FRoomEdge>& Edges)
