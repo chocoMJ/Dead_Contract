@@ -12,24 +12,31 @@ AMapGenerationManager::AMapGenerationManager()
 
 void AMapGenerationManager::BeginPlay()
 {
-	GenerateRandomMap();
-	
-	SeperateRooms();
-
-	TArray<FVector2D> RoomPositions;
-	for (ARoom* Room : Rooms)
+	if (HasAuthority())
 	{
-		FVector Pos = Room->GetActorLocation();
-		RoomPositions.Add(FVector2D(Pos.X, Pos.Y));
+		GenerateRandomMap();
+
+		SeperateRooms();
+
+		TArray<FVector2D> RoomPositions;
+		for (ARoom* Room : Rooms)
+		{
+			FVector Pos = Room->GetActorLocation();
+			RoomPositions.Add(FVector2D(Pos.X, Pos.Y));
+		}
+
+		TArray<FTriangle> Triangles = DelaunayTriangulation(RoomPositions);
+
+		DelaunayEdges = TrianglesToEdges(Triangles);
+
+		StartRoomIndex = FindStartRoomIndex();
+
+		MSTEdges = ComputeMST(StartRoomIndex);
+
+		FinalEdges = AddRandomEdges();
+
+		DrawEdges(FinalEdges);
 	}
-
-	TArray<FTriangle> Triangles = DelaunayTriangulation(RoomPositions);
-
-	DelaunayEdges = TrianglesToEdges(Triangles);
-
-	MSTEdges = ComputeMST(2);
-
-	DrawEdges(MSTEdges);
 }
 
 FVector2D AMapGenerationManager::GetRandomPointInCircle(float _radius)
@@ -135,6 +142,28 @@ bool AMapGenerationManager::AABBCollisionDetector(ARoom* RA, ARoom* RB)
 	bool bOverlapY = FMath::Abs(CenterA.Y - CenterB.Y) < (ExtentA.Y + ExtentB.Y);
 
 	return bOverlapX && bOverlapY;
+}
+
+int32 AMapGenerationManager::FindStartRoomIndex()
+{
+	float MaxDist = 0.f;
+	int32 StartIndex = 0;
+	FVector ManagerLocation = GetActorLocation();
+
+	for (int32 i = 0; i < Rooms.Num(); i++)
+	{
+		FVector Pos = Rooms[i]->GetActorLocation();
+		float Dist = 
+			FVector2D(Pos.X - ManagerLocation.X, Pos.Y - ManagerLocation.Y).SizeSquared();
+
+		if (Dist > MaxDist)
+		{
+			MaxDist = Dist;
+			StartIndex = i;
+		}
+	}
+
+	return StartIndex;
 }
 
 TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVector2D>& Nodes)
@@ -441,6 +470,35 @@ TArray<FRoomEdge> AMapGenerationManager::ComputeMST(int32 StartIndex)
 	}
 
 	return MSTEdges;
+}
+
+TArray<FRoomEdge> AMapGenerationManager::AddRandomEdges()
+{
+	TArray<FRoomEdge> Result = MSTEdges;
+
+	for (const FRoomEdge& Edge : DelaunayEdges)
+	{
+		// MST¿¡ ÀÌ¹Ì ÀÖ´Â ¿§Áö¸é ½ºÅµ
+		bool bAlreadyInMST = false;
+		for (const FRoomEdge& MSTEdge : MSTEdges)
+		{
+			if (Edge == MSTEdge)
+			{
+				bAlreadyInMST = true;
+				break;
+			}
+		}
+
+		if (bAlreadyInMST) continue;
+
+		// 20% È®·ü·Î Ãß°¡
+		if (FMath::FRand() < 0.2f)
+		{
+			Result.Add(Edge);
+		}
+	}
+
+	return Result;
 }
 
 void AMapGenerationManager::DrawEdges(const TArray<FRoomEdge>& Edges)

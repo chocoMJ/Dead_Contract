@@ -103,11 +103,15 @@ private:
 	UPROPERTY()
 	TArray<FRoomEdge> MSTEdges;
 
+	UPROPERTY()
+	TArray<FRoomEdge> FinalEdges;
+
 	//Room 객체 랜덤 배치 및 분할
 	FVector2D GetRandomPointInCircle(float radius);
 	void GenerateRandomMap();
 	void SeperateRooms();
 	bool AABBCollisionDetector(ARoom* RA, ARoom* RB);
+	int32 FindStartRoomIndex();
 
 	//들로네 공간분할
 	TArray<FTriangle> DelaunayTriangulation(const TArray<FVector2D>& Nodes);
@@ -117,6 +121,7 @@ private:
 
 	//MST 계산
 	TArray<FRoomEdge> ComputeMST(int32 StartIndex);
+	TArray<FRoomEdge> AddRandomEdges();
 
 	void DrawEdges(const TArray<FRoomEdge>& Edges);
 };
