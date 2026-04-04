@@ -67,6 +67,21 @@ struct FPrimNode
 		MinDistance(MAX_flt), DistFromStart(MAX_flt), ParentIndex(-1), bInMST(false) {}
 };
 
+USTRUCT()
+struct FGeneratedRoom
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TObjectPtr<class URoomTemplateDataAsset> Template = nullptr;
+
+	UPROPERTY()
+	FVector2D Center = FVector2D::ZeroVector;
+
+	UPROPERTY()
+	FVector2D HalfExtent = FVector2D::ZeroVector;
+};
+
 UCLASS()
 class DEAD_CONTRACT_API AMapGenerationManager : public AActor
 {
@@ -91,8 +106,8 @@ private:
 	UPROPERTY(EditAnywhere)
 	int32 numOfRoom;
 
-	UPROPERTY(EditAnywhere)
-	TSubclassOf<ARoom> RoomClass;
+	//UPROPERTY(EditAnywhere)
+	//TSubclassOf<ARoom> RoomClass;
 
 	UPROPERTY()
 	TArray<ARoom*> Rooms;
@@ -106,12 +121,19 @@ private:
 	UPROPERTY()
 	TArray<FRoomEdge> FinalEdges;
 
+	UPROPERTY(EditAnywhere, Category = "Generation")
+	TArray<TObjectPtr<class URoomTemplateDataAsset>> RoomTemplates;
+
+	UPROPERTY()
+	TArray<FGeneratedRoom> GeneratedRooms;
+
 	//Room 객체 랜덤 배치 및 분할
+	void CreateGeneratedRoomsFromTemplates();
 	FVector2D GetRandomPointInCircle(float radius);
-	void GenerateRandomMap();
 	void SeperateRooms();
-	bool AABBCollisionDetector(ARoom* RA, ARoom* RB);
+	bool AABBCollisionDetector(const FGeneratedRoom& A, const FGeneratedRoom& B);
 	int32 FindStartRoomIndex();
+	void SpawnRooms();
 
 	//들로네 공간분할
 	TArray<FTriangle> DelaunayTriangulation(const TArray<FVector2D>& Nodes);

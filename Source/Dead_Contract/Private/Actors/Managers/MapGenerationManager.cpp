@@ -1,6 +1,7 @@
 #include "Actors/Managers/MapGenerationManager.h"
 #include "Actors/Rooms/Room.h"
 #include "Components/BoxComponent.h"
+#include "DataAssets/RoomTemplateDataAsset.h"
 #include "DebugHelper.h"
 
 
@@ -14,16 +15,18 @@ void AMapGenerationManager::BeginPlay()
 {
 	if (HasAuthority())
 	{
-		GenerateRandomMap();
+		CreateGeneratedRoomsFromTemplates();
 
 		SeperateRooms();
 
 		TArray<FVector2D> RoomPositions;
-		for (ARoom* Room : Rooms)
+		for (FGeneratedRoom Room : GeneratedRooms)
 		{
-			FVector Pos = Room->GetActorLocation();
-			RoomPositions.Add(FVector2D(Pos.X, Pos.Y));
+			FVector2D Pos = Room.Center;
+			RoomPositions.Add(Pos);
 		}
+
+		SpawnRooms();
 
 		TArray<FTriangle> Triangles = DelaunayTriangulation(RoomPositions);
 
@@ -39,6 +42,35 @@ void AMapGenerationManager::BeginPlay()
 	}
 }
 
+void AMapGenerationManager::CreateGeneratedRoomsFromTemplates()
+{
+	GeneratedRooms.Empty();
+
+	if (RoomTemplates.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("RoomTemplates is empty"));
+		return;
+	}
+
+	for (int32 i = 0; i < numOfRoom; ++i)
+	{
+		URoomTemplateDataAsset* Template = RoomTemplates[FMath::RandRange(0, RoomTemplates.Num() - 1)];
+
+		if (!Template)
+		{
+			continue;
+		}
+
+		FGeneratedRoom NewRoom;
+		NewRoom.Template = Template;
+		NewRoom.HalfExtent = Template->HalfExtent;
+		NewRoom.Center = GetRandomPointInCircle(radius);
+
+		GeneratedRooms.Add(NewRoom);
+		UE_LOG(LogTemp, Warning, TEXT("Add!!"));
+	}
+}
+
 FVector2D AMapGenerationManager::GetRandomPointInCircle(float _radius)
 {
 	float theta = 2.f * PI * FMath::FRand();
@@ -48,29 +80,6 @@ FVector2D AMapGenerationManager::GetRandomPointInCircle(float _radius)
 	return FVector2D(
 		_radius * r * cos(theta),
 		_radius * r * sin(theta));
-}
-
-void AMapGenerationManager::GenerateRandomMap()
-{
-	FVector actorLocation = GetActorLocation();
-	FVector SpawnLocation;
-
-	for (int i = 0; i < numOfRoom; i++)
-	{
-		//Spawn할 location 지정
-		FVector2D randomLocation = GetRandomPointInCircle(radius);
-		SpawnLocation = actorLocation + FVector(randomLocation, 0.f);
-
-		// SpawnActor 호출
-		ARoom* room = GetWorld()->SpawnActor<ARoom>(
-			RoomClass,
-			SpawnLocation,
-			FRotator::ZeroRotator
-		);
-
-		//Room 배열에 추가
-		Rooms.Add(room);
-	}
 }
 
 void AMapGenerationManager::SeperateRooms()
@@ -83,31 +92,30 @@ void AMapGenerationManager::SeperateRooms()
 	{
 		bool bOverlapping = false;
 		
-		for (int32 i = 0; i < Rooms.Num(); i++)
+		for (int32 i = 0; i < GeneratedRooms.Num(); i++)
 		{
-			for (int32 j = i + 1; j < Rooms.Num(); j++)
+			for (int32 j = i + 1; j < GeneratedRooms.Num(); j++)
 			{
-				ARoom* RoomA = Rooms[i];
-				ARoom* RoomB = Rooms[j];
+				FGeneratedRoom& RoomA = GeneratedRooms[i];
+				FGeneratedRoom& RoomB = GeneratedRooms[j];
 				// 겹치는지 확인
 				if (AABBCollisionDetector(RoomA, RoomB))
 				{
 					
 					// 방향 계산
-					FVector Direction = RoomA->GetActorLocation() - RoomB->GetActorLocation();
-					Direction.Z = 0; // Z축 무시
+					FVector2D Direction = RoomA.Center - RoomB.Center;
 
 					// 같은 위치면 랜덤
 					if (Direction.IsNearlyZero())
 					{
-						Direction = FVector(FMath::RandRange(-1.f, 1.f), FMath::RandRange(-1.f, 1.f), 0);
+						Direction = FVector2D(FMath::RandRange(-1.f, 1.f), FMath::RandRange(-1.f, 1.f));
 					}
 
 					Direction.Normalize();
 
 					// 서로 밀어내기
-					RoomA->AddActorWorldOffset(Direction * PushStrength);
-					RoomB->AddActorWorldOffset(-Direction * PushStrength);
+					RoomA.Center += Direction * PushStrength;
+					RoomB.Center -= Direction * PushStrength;
 
 					bOverlapping = true;
 				}
@@ -121,25 +129,10 @@ void AMapGenerationManager::SeperateRooms()
 	}
 }
 
-bool AMapGenerationManager::AABBCollisionDetector(ARoom* RA, ARoom* RB)
+bool AMapGenerationManager::AABBCollisionDetector(const FGeneratedRoom& A, const FGeneratedRoom& B)
 {
-	// Null 체크
-	if (!RA || !RB || !RA->CollisionBox || !RB->CollisionBox)
-	{
-		return false;
-	}
-
-	// 두 방의 중심 위치
-	FVector CenterA = RA->GetActorLocation();
-	FVector CenterB = RB->GetActorLocation();
-
-	// 두 방의 박스 크기
-	FVector ExtentA = RA->CollisionBox->GetScaledBoxExtent() + 100.f;
-	FVector ExtentB = RB->CollisionBox->GetScaledBoxExtent() + 100.f;
-
-	// AABB 충돌 검사 (2축 모두 겹쳐야 충돌)
-	bool bOverlapX = FMath::Abs(CenterA.X - CenterB.X) < (ExtentA.X + ExtentB.X);
-	bool bOverlapY = FMath::Abs(CenterA.Y - CenterB.Y) < (ExtentA.Y + ExtentB.Y);
+	const bool bOverlapX = FMath::Abs(A.Center.X - B.Center.X) < (A.HalfExtent.X + 100.f + B.HalfExtent.X + 100.f);
+	const bool bOverlapY = FMath::Abs(A.Center.Y - B.Center.Y) < (A.HalfExtent.Y + 100.f + B.HalfExtent.Y + 100.f);
 
 	return bOverlapX && bOverlapY;
 }
@@ -164,6 +157,40 @@ int32 AMapGenerationManager::FindStartRoomIndex()
 	}
 
 	return StartIndex;
+}
+
+void AMapGenerationManager::SpawnRooms()
+{
+	for (const FGeneratedRoom& RoomData : GeneratedRooms)
+	{
+		if (!RoomData.Template)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("RoomData.Template is null"));
+			continue;
+		}
+
+		FVector SpawnLocation(RoomData.Center.X, RoomData.Center.Y, 0.f);
+		FRotator SpawnRotation = FRotator::ZeroRotator;
+		TSubclassOf<ARoom> RoomClass = RoomData.Template->RoomClass;
+
+		if (!RoomClass)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("RoomClass is null in Template"));
+			continue;
+		}
+
+		FActorSpawnParameters Params;
+		Params.Owner = this;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		ARoom* SpawnedRoom = GetWorld()->SpawnActor<ARoom>(
+			RoomClass,
+			SpawnLocation,
+			SpawnRotation,
+			Params
+		);
+		Rooms.Add(SpawnedRoom);
+	}
 }
 
 TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVector2D>& Nodes)
@@ -537,3 +564,50 @@ void AMapGenerationManager::DrawEdges(const TArray<FRoomEdge>& Edges)
 		);
 	}
 }
+
+
+//void AMapGenerationManager::GenerateRandomMap()
+//{
+//	FVector actorLocation = GetActorLocation();
+//	FVector SpawnLocation;
+//
+//	for (int i = 0; i < numOfRoom; i++)
+//	{
+//		//Spawn할 location 지정
+//		FVector2D randomLocation = GetRandomPointInCircle(radius);
+//		SpawnLocation = actorLocation + FVector(randomLocation, 0.f);
+//
+//		// SpawnActor 호출
+//		ARoom* room = GetWorld()->SpawnActor<ARoom>(
+//			RoomClass,
+//			SpawnLocation,
+//			FRotator::ZeroRotator
+//		);
+//
+//		//Room 배열에 추가
+//		Rooms.Add(room);
+//	}
+//}
+
+//bool AMapGenerationManager::AABBCollisionDetector(ARoom* RA, ARoom* RB)
+//{
+//	// Null 체크
+//	if (!RA || !RB || !RA->CollisionBox || !RB->CollisionBox)
+//	{
+//		return false;
+//	}
+//
+//	// 두 방의 중심 위치
+//	FVector CenterA = RA->GetActorLocation();
+//	FVector CenterB = RB->GetActorLocation();
+//
+//	// 두 방의 박스 크기
+//	FVector ExtentA = RA->CollisionBox->GetScaledBoxExtent() + 100.f;
+//	FVector ExtentB = RB->CollisionBox->GetScaledBoxExtent() + 100.f;
+//
+//	// AABB 충돌 검사 (2축 모두 겹쳐야 충돌)
+//	bool bOverlapX = FMath::Abs(CenterA.X - CenterB.X) < (ExtentA.X + ExtentB.X);
+//	bool bOverlapY = FMath::Abs(CenterA.Y - CenterB.Y) < (ExtentA.Y + ExtentB.Y);
+//
+//	return bOverlapX && bOverlapY;
+//}
