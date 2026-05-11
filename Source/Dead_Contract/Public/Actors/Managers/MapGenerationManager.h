@@ -80,6 +80,18 @@ struct FGeneratedRoom
 
 	UPROPERTY()
 	FVector2D HalfExtent = FVector2D::ZeroVector;
+
+	UPROPERTY(EditAnywhere)
+	FIntPoint GridCenter;
+
+	UPROPERTY(EditAnywhere)
+	FIntPoint RoomSizeInGrid = FIntPoint(5, 5);
+
+	UPROPERTY(EditAnywhere)
+	TSubclassOf<AActor> RoomClass;
+
+	UPROPERTY()
+	AActor* SpawnedRoom = nullptr;
 };
 
 UCLASS()
@@ -127,13 +139,22 @@ private:
 	UPROPERTY()
 	TArray<FGeneratedRoom> GeneratedRooms;
 
+	UPROPERTY(EditAnywhere, Category = "Map Generation|Grid")
+	float GridSize = 100.0f;
+
 	//Room 객체 랜덤 배치 및 분할
 	void CreateGeneratedRoomsFromTemplates();
 	FVector2D GetRandomPointInCircle(float radius);
 	void SeperateRooms();
+	FVector2D SnapToGrid(const FVector2D& WorldPosition) const;
 	bool AABBCollisionDetector(const FGeneratedRoom& A, const FGeneratedRoom& B);
 	int32 FindStartRoomIndex();
 	void SpawnRooms();
+
+	FIntPoint WorldToGrid(const FVector2D& WorldPosition) const;
+	FVector2D GridToWorld2D(const FIntPoint& GridPosition) const;
+	void UpdateRoomGridCenters();
+	FIntRect GetRoomGridRect(const FGeneratedRoom& Room) const;
 
 	//들로네 공간분할
 	TArray<FTriangle> DelaunayTriangulation(const TArray<FVector2D>& Nodes);

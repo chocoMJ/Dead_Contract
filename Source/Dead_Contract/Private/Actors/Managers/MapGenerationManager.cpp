@@ -19,6 +19,8 @@ void AMapGenerationManager::BeginPlay()
 
 		SeperateRooms();
 
+		UpdateRoomGridCenters();
+
 		TArray<FVector2D> RoomPositions;
 		for (FGeneratedRoom Room : GeneratedRooms)
 		{
@@ -85,12 +87,17 @@ FVector2D AMapGenerationManager::GetRandomPointInCircle(float _radius)
 void AMapGenerationManager::SeperateRooms()
 {
 	const int32 MaxIterations = 100;
-	const float PushStrength = 100.0f;
+	const float PushStrength = GridSize;
 
 	//iter만큼 충돌감지 및 밀어내기 작업
 	for (int iter = 0; iter < MaxIterations; iter++)
 	{
 		bool bOverlapping = false;
+
+		for (FGeneratedRoom& Room : GeneratedRooms)
+		{
+			Room.Center = SnapToGrid(Room.Center);
+		}
 		
 		for (int32 i = 0; i < GeneratedRooms.Num(); i++)
 		{
@@ -98,41 +105,73 @@ void AMapGenerationManager::SeperateRooms()
 			{
 				FGeneratedRoom& RoomA = GeneratedRooms[i];
 				FGeneratedRoom& RoomB = GeneratedRooms[j];
+
 				// 겹치는지 확인
 				if (AABBCollisionDetector(RoomA, RoomB))
 				{
 					
-					// 방향 계산
-					FVector2D Direction = RoomA.Center - RoomB.Center;
+					FVector2D Delta = RoomA.Center - RoomB.Center;
 
-					// 같은 위치면 랜덤
-					if (Direction.IsNearlyZero())
+					if (Delta.IsNearlyZero())
 					{
-						Direction = FVector2D(FMath::RandRange(-1.f, 1.f), FMath::RandRange(-1.f, 1.f));
+						Delta = FVector2D(
+							FMath::RandBool() ? 1.f : -1.f,
+							FMath::RandBool() ? 1.f : -1.f
+						);
 					}
 
-					Direction.Normalize();
+					if (FMath::Abs(Delta.X) > FMath::Abs(Delta.Y))
+					{
+						const float DirX = Delta.X > 0.f ? 1.f : -1.f;
 
-					// 서로 밀어내기
-					RoomA.Center += Direction * PushStrength;
-					RoomB.Center -= Direction * PushStrength;
+						RoomA.Center.X += DirX * PushStrength;
+						RoomB.Center.X -= DirX * PushStrength;
+					}
+					else
+					{
+						const float DirY = Delta.Y > 0.f ? 1.f : -1.f;
+
+						RoomA.Center.Y += DirY * PushStrength;
+						RoomB.Center.Y -= DirY * PushStrength;
+					}
 
 					bOverlapping = true;
 				}
 			}
 		}
+
 		if (!bOverlapping)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("Separation finished at iteration %d"), iter);
 			break;
 		}
+
 	}
+}
+
+FVector2D AMapGenerationManager::SnapToGrid(const FVector2D& WorldPosition) const
+{
+	const FVector ManagerLocation = GetActorLocation();
+
+	// Manager를 원점으로 본 로컬 좌표
+	const float LocalX = WorldPosition.X - ManagerLocation.X;
+	const float LocalY = WorldPosition.Y - ManagerLocation.Y;
+
+	// GridSize 단위로 반올림
+	const float SnappedLocalX = FMath::RoundToFloat(LocalX / GridSize) * GridSize;
+	const float SnappedLocalY = FMath::RoundToFloat(LocalY / GridSize) * GridSize;
+
+	// 다시 월드 좌표로 변환
+	return FVector2D(
+		ManagerLocation.X + SnappedLocalX,
+		ManagerLocation.Y + SnappedLocalY
+	);
 }
 
 bool AMapGenerationManager::AABBCollisionDetector(const FGeneratedRoom& A, const FGeneratedRoom& B)
 {
-	const bool bOverlapX = FMath::Abs(A.Center.X - B.Center.X) < (A.HalfExtent.X + 100.f + B.HalfExtent.X + 100.f);
-	const bool bOverlapY = FMath::Abs(A.Center.Y - B.Center.Y) < (A.HalfExtent.Y + 100.f + B.HalfExtent.Y + 100.f);
+	const bool bOverlapX = FMath::Abs(A.Center.X - B.Center.X) < (A.HalfExtent.X + GridSize + B.HalfExtent.X + 100.f);
+	const bool bOverlapY = FMath::Abs(A.Center.Y - B.Center.Y) < (A.HalfExtent.Y + GridSize + B.HalfExtent.Y + 100.f);
 
 	return bOverlapX && bOverlapY;
 }
@@ -191,6 +230,54 @@ void AMapGenerationManager::SpawnRooms()
 		);
 		Rooms.Add(SpawnedRoom);
 	}
+}
+
+FIntPoint AMapGenerationManager::WorldToGrid(const FVector2D& WorldPosition) const
+{
+	const FVector ManagerLocation = GetActorLocation();
+
+	const float LocalX = WorldPosition.X - ManagerLocation.X;
+	const float LocalY = WorldPosition.Y - ManagerLocation.Y;
+
+	const int32 GridX = FMath::RoundToInt(LocalX / GridSize);
+	const int32 GridY = FMath::RoundToInt(LocalY / GridSize);
+
+	return FIntPoint(GridX, GridY);
+}
+
+FVector2D AMapGenerationManager::GridToWorld2D(const FIntPoint& GridPosition) const
+{
+	const FVector ManagerLocation = GetActorLocation();
+
+	const float WorldX = ManagerLocation.X + GridPosition.X * GridSize;
+	const float WorldY = ManagerLocation.Y + GridPosition.Y * GridSize;
+
+	return FVector2D(WorldX, WorldY);
+}
+
+void AMapGenerationManager::UpdateRoomGridCenters()
+{
+	for (FGeneratedRoom& Room : GeneratedRooms)
+	{
+		Room.GridCenter = WorldToGrid(Room.Center);
+	}
+}
+
+FIntRect AMapGenerationManager::GetRoomGridRect(const FGeneratedRoom& Room) const
+{
+	const int32 Width = Room.RoomSizeInGrid.X;
+	const int32 Height = Room.RoomSizeInGrid.Y;
+
+	const int32 MinX = Room.GridCenter.X - Width / 2;
+	const int32 MinY = Room.GridCenter.Y - Height / 2;
+
+	const int32 MaxX = MinX + Width;
+	const int32 MaxY = MinY + Height;
+
+	return FIntRect(
+		FIntPoint(MinX, MinY),
+		FIntPoint(MaxX, MaxY)
+	);
 }
 
 TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVector2D>& Nodes)
