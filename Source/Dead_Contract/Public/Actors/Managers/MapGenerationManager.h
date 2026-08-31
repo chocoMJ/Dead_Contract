@@ -2,97 +2,13 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "MapGenerationTypes.h"
 #include "MapGenerationManager.generated.h"
 
 class ARoom;
+enum class ERoomSocketDirection : uint8;
+struct FRoomSocket;
 
-USTRUCT()
-struct FRoomEdge
-{
-	GENERATED_BODY()
-
-	int32 RoomIndexA;
-	int32 RoomIndexB;
-	float Distance;
-
-	FRoomEdge() : RoomIndexA(-1), RoomIndexB(-1), Distance(0.f) {}
-
-	FRoomEdge(int32 A, int32 B, float Dist)
-		: RoomIndexA(A), RoomIndexB(B), Distance(Dist) {
-	}
-
-	bool operator==(const FRoomEdge& Other) const
-	{
-		return (RoomIndexA == Other.RoomIndexA && RoomIndexB == Other.RoomIndexB) ||
-			(RoomIndexA == Other.RoomIndexB && RoomIndexB == Other.RoomIndexA);
-	}
-};
-
-USTRUCT()
-struct FTriangle
-{
-	GENERATED_BODY()
-
-	int32 Vertex0;
-	int32 Vertex1;
-	int32 Vertex2;
-	FVector Circumcenter;
-	float CircumradiusSquared;
-
-	FTriangle() : Vertex0(-1), Vertex1(-1), Vertex2(-1), CircumradiusSquared(0.f) {}
-
-	FTriangle(int32 V0, int32 V1, int32 V2)
-		: Vertex0(V0), Vertex1(V1), Vertex2(V2)
-	{
-		CircumradiusSquared = 0.f;
-	}
-
-	bool ContainsVertex(int32 VertexIndex) const
-	{
-		return Vertex0 == VertexIndex || Vertex1 == VertexIndex || Vertex2 == VertexIndex;
-	}
-};
-
-USTRUCT()
-struct FPrimNode
-{
-	GENERATED_BODY()
-
-	float MinDistance;
-	float DistFromStart;
-	int32 ParentIndex;
-	bool bInMST;
-
-	FPrimNode() :
-		MinDistance(MAX_flt), DistFromStart(MAX_flt), ParentIndex(-1), bInMST(false) {}
-};
-
-USTRUCT()
-struct FGeneratedRoom
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	TObjectPtr<class URoomTemplateDataAsset> Template = nullptr;
-
-	UPROPERTY()
-	FVector2D Center = FVector2D::ZeroVector;
-
-	UPROPERTY()
-	FVector2D HalfExtent = FVector2D::ZeroVector;
-
-	UPROPERTY(EditAnywhere)
-	FIntPoint GridCenter;
-
-	UPROPERTY(EditAnywhere)
-	FIntPoint RoomSizeInGrid = FIntPoint(5, 5);
-
-	UPROPERTY(EditAnywhere)
-	TSubclassOf<AActor> RoomClass;
-
-	UPROPERTY()
-	AActor* SpawnedRoom = nullptr;
-};
 
 UCLASS()
 class DEAD_CONTRACT_API AMapGenerationManager : public AActor
@@ -107,6 +23,8 @@ protected:
 	virtual void BeginPlay() override;
 
 private:
+	TMap<FIntPoint, EGridCellType> GridMap;
+
 	FVector Center;
 
 	int32 StartRoomIndex;
@@ -117,9 +35,6 @@ private:
 
 	UPROPERTY(EditAnywhere)
 	int32 numOfRoom;
-
-	//UPROPERTY(EditAnywhere)
-	//TSubclassOf<ARoom> RoomClass;
 
 	UPROPERTY()
 	TArray<ARoom*> Rooms;
@@ -140,9 +55,27 @@ private:
 	TArray<FGeneratedRoom> GeneratedRooms;
 
 	UPROPERTY(EditAnywhere, Category = "Map Generation|Grid")
-	float GridSize = 100.0f;
+	float GridSize = 400.0f;
 
-	//Room 객체 랜덤 배치 및 분할
+	UPROPERTY(EditAnywhere, Category = "Map Generation|Corridor")
+	TSubclassOf<AActor> StraightCorridorClass;
+
+	UPROPERTY(EditAnywhere, Category = "Map Generation|Corridor")
+	TSubclassOf<AActor> CornerCorridorClass;
+
+	UPROPERTY(EditAnywhere, Category = "Map Generation|Corridor")
+	TSubclassOf<AActor> TJunctionCorridorClass;
+
+	UPROPERTY(EditAnywhere, Category = "Map Generation|Corridor")
+	TSubclassOf<AActor> CrossCorridorClass;
+
+	UPROPERTY(EditAnywhere, Category = "Map Generation|Corridor")
+	TSubclassOf<AActor> DeadEndCorridorClass;
+
+	UPROPERTY()
+	TArray<AActor*> SpawnedCorridors;
+
+	// Room object random placement and separation
 	void CreateGeneratedRoomsFromTemplates();
 	FVector2D GetRandomPointInCircle(float radius);
 	void SeperateRooms();
@@ -151,21 +84,39 @@ private:
 	int32 FindStartRoomIndex();
 	void SpawnRooms();
 
+	// Grid based placement
 	FIntPoint WorldToGrid(const FVector2D& WorldPosition) const;
 	FVector2D GridToWorld2D(const FIntPoint& GridPosition) const;
 	void UpdateRoomGridCenters();
 	FIntRect GetRoomGridRect(const FGeneratedRoom& Room) const;
+	void BuildGridMapFromRooms();
 
-	//들로네 공간분할
+	// Delaunay triangulation
 	TArray<FTriangle> DelaunayTriangulation(const TArray<FVector2D>& Nodes);
 	void CalculateCircumcircle(FTriangle& Triangle, const TArray<FVector2D>& Points);
 	bool IsPointInCircumcircle(const FTriangle& Triangle, const FVector2D& Point);
 	TArray<FRoomEdge> TrianglesToEdges(const TArray<FTriangle>& Triangles);
 
-	//MST 계산
+	// MST
 	TArray<FRoomEdge> ComputeMST(int32 StartIndex);
 	TArray<FRoomEdge> AddRandomEdges();
 
-	void DrawEdges(const TArray<FRoomEdge>& Edges);
-};
+	void BuildRoomConnections();
+	ERoomSocketDirection GetDirectionFromDelta(const FIntPoint& Delta) const;
+	ERoomSocketDirection GetOppositeDirection(ERoomSocketDirection Direction) const;
+	FIntPoint DirectionToGridOffset(ERoomSocketDirection Direction) const;
+	bool FindSocketForDirection(const FGeneratedRoom& Room, ERoomSocketDirection Direction, FRoomSocket& OutSocket) const;
+	void OpenRoomDoors();
+	bool DisableDoorComponent(ARoom* Room, const FName& ComponentName) const;
+	void BuildCorridors();
+	TArray<FIntPoint> BuildLPath(const FIntPoint& Start, const FIntPoint& End, bool bHorizontalFirst) const;
+	int32 CalculatePathCost(const TArray<FIntPoint>& Path) const;
+	void ApplyCorridorPath(const TArray<FIntPoint>& Path);
+	uint8 GetCellConnectionMask(const FIntPoint& Cell) const;
+	bool GetCorridorClassAndRotationFromMask(uint8 Mask, TSubclassOf<AActor>& OutClass, FRotator& OutRotation) const;
+	void SpawnCorridors();
 
+	// Debug
+	void DrawEdges(const TArray<FRoomEdge>& Edges);
+	void DrawGridMap() const;
+};

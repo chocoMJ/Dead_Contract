@@ -19,7 +19,4 @@ class DEAD_CONTRACT_API URoomTemplateDataAsset : public UDataAsset
 public:
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room")
     TSubclassOf<ARoom> RoomClass;
-
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room")
-    FVector2D HalfExtent = FVector2D(200.f, 200.f);
 };

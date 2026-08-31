@@ -20,7 +20,7 @@ public:
 	FGameplayTag InputTag;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-	UInputAction* InputAction;
+	UInputAction* InputAction = nullptr;
 };
 
 /**
@@ -33,7 +33,7 @@ class DEAD_CONTRACT_API UDataAsset_InputConfig : public UDataAsset
 
 public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-	UInputMappingContext* DefaultMappingContext;
+	UInputMappingContext* DefaultMappingContext = nullptr;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, meta = (TitleProperty = "InputTag"))
 	TArray<FContractInputActionConfig> NativeInputActions;

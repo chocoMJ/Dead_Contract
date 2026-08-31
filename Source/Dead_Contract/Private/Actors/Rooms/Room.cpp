@@ -14,9 +14,6 @@ ARoom::ARoom()
 	CollisionBox = CreateDefaultSubobject<UBoxComponent>(TEXT("CollisionBox"));
 	RootComponent = CollisionBox;
 
-	RoomMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("RoomMesh"));
-	RoomMesh->SetupAttachment(RootComponent);
-
 	CollisionBox->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	CollisionBox->SetCollisionObjectType(ECC_Room);
 	CollisionBox->SetCollisionResponseToAllChannels(ECR_Block);

@@ -8,6 +8,34 @@
 
 class UBoxComponent;
 
+UENUM(BlueprintType)
+enum class ERoomSocketDirection : uint8
+{
+    North,
+    East,
+    South,
+    West
+};
+
+USTRUCT(BlueprintType)
+struct FRoomSocket
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly)
+    FName Id;
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly)
+    ERoomSocketDirection Direction = ERoomSocketDirection::North;
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly)
+    FIntPoint GridOffset = FIntPoint::ZeroValue;
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly)
+    FName ComponentName;
+
+};
+
 UCLASS()
 class DEAD_CONTRACT_API ARoom : public AActor
 {
@@ -20,6 +48,9 @@ public:
 	UPROPERTY(VisibleAnywhere)
 	UBoxComponent* CollisionBox;
 
-	UPROPERTY(VisibleAnywhere)
-	UStaticMeshComponent* RoomMesh;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room")
+	FIntPoint RoomSizeInGrid = FIntPoint(5,5);
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room|Sockets")
+    TArray<FRoomSocket> Sockets;
 };

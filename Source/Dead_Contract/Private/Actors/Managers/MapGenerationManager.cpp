@@ -1,6 +1,7 @@
 #include "Actors/Managers/MapGenerationManager.h"
 #include "Actors/Rooms/Room.h"
 #include "Components/BoxComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "DataAssets/RoomTemplateDataAsset.h"
 #include "DebugHelper.h"
 
@@ -21,6 +22,8 @@ void AMapGenerationManager::BeginPlay()
 
 		UpdateRoomGridCenters();
 
+		BuildGridMapFromRooms();
+
 		TArray<FVector2D> RoomPositions;
 		for (FGeneratedRoom Room : GeneratedRooms)
 		{
@@ -40,6 +43,12 @@ void AMapGenerationManager::BeginPlay()
 
 		FinalEdges = AddRandomEdges();
 
+		BuildRoomConnections();
+		OpenRoomDoors();
+
+		BuildCorridors();
+		SpawnCorridors();
+		DrawGridMap();
 		DrawEdges(FinalEdges);
 	}
 }
@@ -54,25 +63,47 @@ void AMapGenerationManager::CreateGeneratedRoomsFromTemplates()
 		return;
 	}
 
-	for (int32 i = 0; i < numOfRoom; ++i)
+	const int32 MaxAttempts = numOfRoom * 10;
+	int32 Attempts = 0;
+
+	while (GeneratedRooms.Num() < numOfRoom && Attempts < MaxAttempts)
 	{
+		++Attempts;
+
 		URoomTemplateDataAsset* Template = RoomTemplates[FMath::RandRange(0, RoomTemplates.Num() - 1)];
 
-		if (!Template)
+		if (!Template || !Template->RoomClass)
+		{
+			continue;
+		}
+
+		const ARoom* RoomCDO = Template->RoomClass->GetDefaultObject<ARoom>();
+		if (!RoomCDO)
 		{
 			continue;
 		}
 
 		FGeneratedRoom NewRoom;
 		NewRoom.Template = Template;
-		NewRoom.HalfExtent = Template->HalfExtent;
-		NewRoom.Center = GetRandomPointInCircle(radius);
+
+		NewRoom.RoomSizeInGrid = RoomCDO->RoomSizeInGrid;
+
+		NewRoom.HalfExtent = FVector2D(
+			NewRoom.RoomSizeInGrid.X * GridSize * 0.5f,
+			NewRoom.RoomSizeInGrid.Y * GridSize * 0.5f
+		);
+
+		const FVector ManagerLocation = GetActorLocation();
+		const FVector2D Offset = GetRandomPointInCircle(radius);
+		NewRoom.Center = FVector2D(ManagerLocation.X, ManagerLocation.Y) + Offset;
+
+		NewRoom.RoomClass = Template->RoomClass;
 
 		GeneratedRooms.Add(NewRoom);
-		UE_LOG(LogTemp, Warning, TEXT("Add!!"));
 	}
-}
 
+	UE_LOG(LogTemp, Warning, TEXT("Requested Rooms: %d, Generated Rooms: %d, Attempts: %d"), numOfRoom, GeneratedRooms.Num(), Attempts);
+}
 FVector2D AMapGenerationManager::GetRandomPointInCircle(float _radius)
 {
 	float theta = 2.f * PI * FMath::FRand();
@@ -89,16 +120,10 @@ void AMapGenerationManager::SeperateRooms()
 	const int32 MaxIterations = 100;
 	const float PushStrength = GridSize;
 
-	//iter만큼 충돌감지 및 밀어내기 작업
 	for (int iter = 0; iter < MaxIterations; iter++)
 	{
 		bool bOverlapping = false;
 
-		for (FGeneratedRoom& Room : GeneratedRooms)
-		{
-			Room.Center = SnapToGrid(Room.Center);
-		}
-		
 		for (int32 i = 0; i < GeneratedRooms.Num(); i++)
 		{
 			for (int32 j = i + 1; j < GeneratedRooms.Num(); j++)
@@ -106,10 +131,8 @@ void AMapGenerationManager::SeperateRooms()
 				FGeneratedRoom& RoomA = GeneratedRooms[i];
 				FGeneratedRoom& RoomB = GeneratedRooms[j];
 
-				// 겹치는지 확인
 				if (AABBCollisionDetector(RoomA, RoomB))
 				{
-					
 					FVector2D Delta = RoomA.Center - RoomB.Center;
 
 					if (Delta.IsNearlyZero())
@@ -120,20 +143,10 @@ void AMapGenerationManager::SeperateRooms()
 						);
 					}
 
-					if (FMath::Abs(Delta.X) > FMath::Abs(Delta.Y))
-					{
-						const float DirX = Delta.X > 0.f ? 1.f : -1.f;
+					Delta.Normalize();
 
-						RoomA.Center.X += DirX * PushStrength;
-						RoomB.Center.X -= DirX * PushStrength;
-					}
-					else
-					{
-						const float DirY = Delta.Y > 0.f ? 1.f : -1.f;
-
-						RoomA.Center.Y += DirY * PushStrength;
-						RoomB.Center.Y -= DirY * PushStrength;
-					}
+					RoomA.Center += Delta * PushStrength;
+					RoomB.Center -= Delta * PushStrength;
 
 					bOverlapping = true;
 				}
@@ -145,7 +158,11 @@ void AMapGenerationManager::SeperateRooms()
 			UE_LOG(LogTemp, Warning, TEXT("Separation finished at iteration %d"), iter);
 			break;
 		}
+	}
 
+	for (FGeneratedRoom& Room : GeneratedRooms)
+	{
+		Room.Center = SnapToGrid(Room.Center);
 	}
 }
 
@@ -153,15 +170,12 @@ FVector2D AMapGenerationManager::SnapToGrid(const FVector2D& WorldPosition) cons
 {
 	const FVector ManagerLocation = GetActorLocation();
 
-	// Manager를 원점으로 본 로컬 좌표
 	const float LocalX = WorldPosition.X - ManagerLocation.X;
 	const float LocalY = WorldPosition.Y - ManagerLocation.Y;
 
-	// GridSize 단위로 반올림
 	const float SnappedLocalX = FMath::RoundToFloat(LocalX / GridSize) * GridSize;
 	const float SnappedLocalY = FMath::RoundToFloat(LocalY / GridSize) * GridSize;
 
-	// 다시 월드 좌표로 변환
 	return FVector2D(
 		ManagerLocation.X + SnappedLocalX,
 		ManagerLocation.Y + SnappedLocalY
@@ -170,8 +184,8 @@ FVector2D AMapGenerationManager::SnapToGrid(const FVector2D& WorldPosition) cons
 
 bool AMapGenerationManager::AABBCollisionDetector(const FGeneratedRoom& A, const FGeneratedRoom& B)
 {
-	const bool bOverlapX = FMath::Abs(A.Center.X - B.Center.X) < (A.HalfExtent.X + GridSize + B.HalfExtent.X + 100.f);
-	const bool bOverlapY = FMath::Abs(A.Center.Y - B.Center.Y) < (A.HalfExtent.Y + GridSize + B.HalfExtent.Y + 100.f);
+	const bool bOverlapX = FMath::Abs(A.Center.X - B.Center.X) < (A.HalfExtent.X + GridSize + B.HalfExtent.X + GridSize);
+	const bool bOverlapY = FMath::Abs(A.Center.Y - B.Center.Y) < (A.HalfExtent.Y + GridSize + B.HalfExtent.Y + GridSize);
 
 	return bOverlapX && bOverlapY;
 }
@@ -200,6 +214,8 @@ int32 AMapGenerationManager::FindStartRoomIndex()
 
 void AMapGenerationManager::SpawnRooms()
 {
+	Rooms.Empty();
+
 	for (const FGeneratedRoom& RoomData : GeneratedRooms)
 	{
 		if (!RoomData.Template)
@@ -210,7 +226,7 @@ void AMapGenerationManager::SpawnRooms()
 
 		FVector SpawnLocation(RoomData.Center.X, RoomData.Center.Y, 0.f);
 		FRotator SpawnRotation = FRotator::ZeroRotator;
-		TSubclassOf<ARoom> RoomClass = RoomData.Template->RoomClass;
+		TSubclassOf<ARoom> RoomClass = RoomData.RoomClass;
 
 		if (!RoomClass)
 		{
@@ -228,10 +244,15 @@ void AMapGenerationManager::SpawnRooms()
 			SpawnRotation,
 			Params
 		);
-		Rooms.Add(SpawnedRoom);
-	}
-}
 
+		if (SpawnedRoom)
+		{
+			Rooms.Add(SpawnedRoom);
+		}
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("Spawned Rooms: %d"), Rooms.Num());
+}
 FIntPoint AMapGenerationManager::WorldToGrid(const FVector2D& WorldPosition) const
 {
 	const FVector ManagerLocation = GetActorLocation();
@@ -280,6 +301,30 @@ FIntRect AMapGenerationManager::GetRoomGridRect(const FGeneratedRoom& Room) cons
 	);
 }
 
+void AMapGenerationManager::BuildGridMapFromRooms()
+{
+	GridMap.Empty();
+
+	for (const FGeneratedRoom& Room : GeneratedRooms) {
+		const FIntRect Rect = GetRoomGridRect(Room);
+
+		for (int32 Y = Rect.Min.Y; Y < Rect.Max.Y; ++Y) {
+			for (int32 X = Rect.Min.X; X < Rect.Max.X; ++X) {
+				const bool bIsWall =
+					X == Rect.Min.X ||
+					X == Rect.Max.X - 1 ||
+					Y == Rect.Min.Y ||
+					Y == Rect.Max.Y - 1;
+
+				GridMap.Add(
+					FIntPoint(X, Y),
+					bIsWall ? EGridCellType::Wall : EGridCellType::Room
+				);
+			}
+		}
+	}
+}
+
 TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVector2D>& Nodes)
 {
 	if (Nodes.Num() < 3)
@@ -287,8 +332,6 @@ TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVec
 		return TArray<FTriangle>();
 	}
 
-	//step1. super triangle 구하기
-	//모든 점을 포함하는 바운딩 박스 구하기
 	float MinX = Nodes[0].X, MinY = Nodes[0].Y;
 	float MaxX = Nodes[0].X, MaxY = Nodes[0].Y;
 
@@ -306,7 +349,6 @@ TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVec
 	float MidX = (MinX + MaxX) / 2.f;
 	float MidY = (MinY + MaxY) / 2.f;
 
-	//바운딩박스보다 훨씬 큰 삼각형 생성
 	TArray<FVector2D> AllPoints = Nodes;
 	int32 SuperVertex0 = AllPoints.Add(FVector2D(MidX - 10.f * DMax, MidY - DMax));
 	int32 SuperVertex1 = AllPoints.Add(FVector2D(MidX, MidY + 10.f * DMax));
@@ -315,16 +357,14 @@ TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVec
 	TArray<FTriangle> Triangles;
 	FTriangle SuperTriangle(SuperVertex0, SuperVertex1, SuperVertex2);
 	CalculateCircumcircle(SuperTriangle, AllPoints);
-	Triangles.Add(SuperTriangle); // 초기 삼각형으로 추가!
+	Triangles.Add(SuperTriangle);
 
-	//step 2. 각점을 하나씩 추가함.
 	for (int32 PointIdx = 0; PointIdx < Nodes.Num(); ++PointIdx)
 	{
 		FVector2D Point = Nodes[PointIdx];
 		TArray<FRoomEdge> Polygon;
 		TArray<int32> TrianglesToRemove;
 
-		//2.1 Node를 포함하는 삼각형 찾기
 		for (int32 i = 0; i < Triangles.Num(); ++i)
 		{
 			if (IsPointInCircumcircle(Triangles[i], Point))
@@ -341,13 +381,11 @@ TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVec
 			}
 		}
 
-		// 2.2. Bad triangles 제거
 		for (int32 i = TrianglesToRemove.Num() - 1; i >= 0; --i)
 		{
 			Triangles.RemoveAt(TrianglesToRemove[i]);
 		}
 
-		// 2.3. 공유간선 제거
 		TArray<FRoomEdge> UniqueEdges;
 		for (const FRoomEdge& Edge : Polygon)
 		{
@@ -360,7 +398,6 @@ TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVec
 				}
 			}
 
-			// 한 번만 등장하는 간선만 고려
 			if (DuplicateCount == 1)
 			{
 				bool AlreadyAdded = false;
@@ -380,7 +417,6 @@ TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVec
 			}
 		}
 
-		// 2.4. 새로운 삼각형 생성
 		for (const FRoomEdge& Edge : UniqueEdges)
 		{
 			FTriangle NewTriangle(Edge.RoomIndexA, Edge.RoomIndexB, PointIdx);
@@ -389,7 +425,6 @@ TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVec
 		}
 	}
 
-	// 3. Super Triangle 정점을 포함하는 삼각형 제거
 	TArray<FTriangle> FinalTriangles;
 	for (const FTriangle& Triangle : Triangles)
 	{
@@ -406,12 +441,10 @@ TArray<FTriangle> AMapGenerationManager::DelaunayTriangulation(const TArray<FVec
 
 void AMapGenerationManager::CalculateCircumcircle(FTriangle& Triangle, const TArray<FVector2D>& Points)
 {
-	//삼각형의 세 꼭짓점 가져오기
 	FVector2D A = Points[Triangle.Vertex0];
 	FVector2D B = Points[Triangle.Vertex1];
 	FVector2D C = Points[Triangle.Vertex2];
 	
-	//변수 정의
 	float a = B.X - A.X;
 	float b = B.Y - A.Y;
 	float c = C.X - A.X;
@@ -424,21 +457,17 @@ void AMapGenerationManager::CalculateCircumcircle(FTriangle& Triangle, const TAr
 	float e = (BSq - ASq) * 0.5f;
 	float f = (CSq - ASq) * 0.5f;
 
-	//행렬식 구하기
 	float D = a * d - b * c;
 
-	//예외 계산
 	if (FMath::Abs(D) < KINDA_SMALL_NUMBER)
 	{
 		Triangle.CircumradiusSquared = MAX_flt;
 		return;
 	}
 
-	//크래머 공식
 	float Ux = (d * e - b * f) / D;
 	float Uy = (a * f - c * e) / D;
 
-	//중심과 반지름 구하기
 	Triangle.Circumcenter = FVector(Ux, Uy, 0.f);
 
 	FVector2D center(Ux, Uy);
@@ -456,24 +485,20 @@ bool AMapGenerationManager::IsPointInCircumcircle(const FTriangle& Triangle, con
 TArray<FRoomEdge> AMapGenerationManager::TrianglesToEdges(const TArray<FTriangle>& Triangles)
 {
 	TArray<FRoomEdge> Edges;
-	TSet<FString> EdgeSet;  // 중복 방지용
+	TSet<FString> EdgeSet;
 
-	// 모든 삼각형 순회
 	for (const FTriangle& Triangle : Triangles)
 	{
-		// 각 삼각형의 3개 간선 추출
 		auto AddEdge = [&](int32 A, int32 B)
 			{
 				int32 MinIdx = FMath::Min(A, B);
 				int32 MaxIdx = FMath::Max(A, B);
 				FString Key = FString::Printf(TEXT("%d-%d"), MinIdx, MaxIdx);
 
-				// 중복 체크
 				if (!EdgeSet.Contains(Key))
 				{
 					EdgeSet.Add(Key);
 
-					// 거리 계산
 					float Distance = FVector::Dist(
 						Rooms[A]->GetActorLocation(),
 						Rooms[B]->GetActorLocation()
@@ -483,10 +508,9 @@ TArray<FRoomEdge> AMapGenerationManager::TrianglesToEdges(const TArray<FTriangle
 				}
 			};
 
-		// 삼각형의 3개 간선 추가
-		AddEdge(Triangle.Vertex0, Triangle.Vertex1);  // AB
-		AddEdge(Triangle.Vertex1, Triangle.Vertex2);  // BC
-		AddEdge(Triangle.Vertex2, Triangle.Vertex0);  // CA
+		AddEdge(Triangle.Vertex0, Triangle.Vertex1);
+		AddEdge(Triangle.Vertex1, Triangle.Vertex2);
+		AddEdge(Triangle.Vertex2, Triangle.Vertex0);
 	}
 
 	return Edges;
@@ -499,16 +523,14 @@ TArray<FRoomEdge> AMapGenerationManager::ComputeMST(int32 StartIndex)
 	TArray<FPrimNode> Nodes;
 	Nodes.SetNum(NumNodes);
 
-	// 시작 노드 설정
 	Nodes[StartIndex].MinDistance = 0.f;
 	Nodes[StartIndex].DistFromStart = 0.f;
 
-	TArray<TPair<float, int32>> Heap; //mindistance와 NodeIndex를 넣어줄 힙
+	TArray<TPair<float, int32>> Heap;
 	Heap.Add(TPair<float, int32>(0.f, StartIndex));
 
 	while (Heap.Num() > 0)
 	{
-		// 힙에서 가장 가까운 노드 꺼내기
 		Heap.Sort([](const TPair<float, int32>& A, const TPair<float, int32>& B) {
 			return A.Key < B.Key;
 			});
@@ -518,11 +540,9 @@ TArray<FRoomEdge> AMapGenerationManager::ComputeMST(int32 StartIndex)
 
 		int32 CurrentIndex = Top.Value;
 
-		// 중복 처리
 		if (Nodes[CurrentIndex].bInMST) continue;
 		Nodes[CurrentIndex].bInMST = true;
 
-		// 현재 노드의 인접 간선 탐색
 		for (const FRoomEdge& Edge : DelaunayEdges)
 		{
 			int32 NeighborIndex = -1;
@@ -534,10 +554,8 @@ TArray<FRoomEdge> AMapGenerationManager::ComputeMST(int32 StartIndex)
 			else
 				continue;
 
-			// 이미 MST에 있으면 스킵
 			if (Nodes[NeighborIndex].bInMST) continue;
 
-			// 노드와 트리간 거리 갱신
 			if (Edge.Distance < Nodes[NeighborIndex].MinDistance)
 			{
 				Nodes[NeighborIndex].MinDistance = Edge.Distance;
@@ -559,8 +577,6 @@ TArray<FRoomEdge> AMapGenerationManager::ComputeMST(int32 StartIndex)
 		}
 	}
 
-	// MST 완성 후 leaf 노드 중 가장 먼 노드 = 보스방
-	// leaf 노드를 찾기 위한 degree 계산
 	TArray<int32> Degree;
 	Degree.SetNum(NumNodes);
 
@@ -570,7 +586,6 @@ TArray<FRoomEdge> AMapGenerationManager::ComputeMST(int32 StartIndex)
 		Degree[Edge.RoomIndexB]++;
 	}
 
-	// leaf 노드 중 DistFromStart 최대값 = 보스방
 	float MaxDist = 0.f;
 	BossRoomIndex = -1;
 
@@ -592,7 +607,6 @@ TArray<FRoomEdge> AMapGenerationManager::AddRandomEdges()
 
 	for (const FRoomEdge& Edge : DelaunayEdges)
 	{
-		// MST에 이미 있는 엣지면 스킵
 		bool bAlreadyInMST = false;
 		for (const FRoomEdge& MSTEdge : MSTEdges)
 		{
@@ -605,7 +619,6 @@ TArray<FRoomEdge> AMapGenerationManager::AddRandomEdges()
 
 		if (bAlreadyInMST) continue;
 
-		// 20% 확률로 추가
 		if (FMath::FRand() < 0.2f)
 		{
 			Result.Add(Edge);
@@ -615,34 +628,586 @@ TArray<FRoomEdge> AMapGenerationManager::AddRandomEdges()
 	return Result;
 }
 
+void AMapGenerationManager::BuildRoomConnections()
+{
+	for (FRoomEdge& Edge : FinalEdges) {
+		if (!GeneratedRooms.IsValidIndex(Edge.RoomIndexA) ||
+			!GeneratedRooms.IsValidIndex(Edge.RoomIndexB))
+		{
+			continue;
+		}
+
+		const FGeneratedRoom& RoomA = GeneratedRooms[Edge.RoomIndexA];
+		const FGeneratedRoom& RoomB = GeneratedRooms[Edge.RoomIndexB];
+
+		const FIntPoint Delta = RoomB.GridCenter - RoomA.GridCenter;
+
+		const ERoomSocketDirection DirectionA = GetDirectionFromDelta(Delta);
+		const ERoomSocketDirection DirectionB = GetOppositeDirection(DirectionA);
+
+		FRoomSocket SocketA;
+		FRoomSocket SocketB;
+
+		if (!FindSocketForDirection(RoomA, DirectionA, SocketA) ||
+			!FindSocketForDirection(RoomB, DirectionB, SocketB))
+		{
+			continue;
+		}
+
+		Edge.DoorA = RoomA.GridCenter + SocketA.GridOffset;
+		Edge.DoorB = RoomB.GridCenter + SocketB.GridOffset;
+		Edge.DoorDirectionA = SocketA.Direction;
+		Edge.DoorDirectionB = SocketB.Direction;
+		Edge.DoorComponentA = SocketA.ComponentName;
+		Edge.DoorComponentB = SocketB.ComponentName;
+		Edge.bHasDoors = true;
+
+		GridMap.Add(Edge.DoorA, EGridCellType::Door);
+		GridMap.Add(Edge.DoorB, EGridCellType::Door);
+	}
+}
+
+void AMapGenerationManager::OpenRoomDoors()
+{
+	for (const FRoomEdge& Edge : FinalEdges)
+	{
+		if (!Edge.bHasDoors)
+		{
+			continue;
+		}
+
+		if (Rooms.IsValidIndex(Edge.RoomIndexA))
+		{
+			DisableDoorComponent(Rooms[Edge.RoomIndexA], Edge.DoorComponentA);
+		}
+
+		if (Rooms.IsValidIndex(Edge.RoomIndexB))
+		{
+			DisableDoorComponent(Rooms[Edge.RoomIndexB], Edge.DoorComponentB);
+		}
+	}
+}
+
+bool AMapGenerationManager::DisableDoorComponent(ARoom* Room, const FName& ComponentName) const
+{
+	if (!Room || ComponentName.IsNone())
+	{
+		return false;
+	}
+
+	TArray<UActorComponent*> Components;
+	Room->GetComponents(Components);
+
+	for (UActorComponent* Component : Components)
+	{
+		if (!Component || Component->GetFName() != ComponentName)
+		{
+			continue;
+		}
+
+		if (UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(Component))
+		{
+			PrimitiveComponent->SetVisibility(false, true);
+			PrimitiveComponent->SetHiddenInGame(true, true);
+			PrimitiveComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			return true;
+		}
+
+		return false;
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("Door component not found: %s"), *ComponentName.ToString());
+	return false;
+}
+
+ERoomSocketDirection AMapGenerationManager::GetDirectionFromDelta(const FIntPoint& Delta) const
+{
+	if (FMath::Abs(Delta.X) > FMath::Abs(Delta.Y))
+	{
+		return Delta.X > 0
+			? ERoomSocketDirection::East
+			: ERoomSocketDirection::West;
+	}
+
+	return Delta.Y > 0
+		? ERoomSocketDirection::North
+		: ERoomSocketDirection::South;
+}
+
+ERoomSocketDirection AMapGenerationManager::GetOppositeDirection(ERoomSocketDirection Direction) const
+{
+	switch (Direction)
+	{
+	case ERoomSocketDirection::North:
+		return ERoomSocketDirection::South;
+	case ERoomSocketDirection::East:
+		return ERoomSocketDirection::West;
+	case ERoomSocketDirection::South:
+		return ERoomSocketDirection::North;
+	case ERoomSocketDirection::West:
+		return ERoomSocketDirection::East;
+	default:
+		return ERoomSocketDirection::North;
+	}
+}
+
+FIntPoint AMapGenerationManager::DirectionToGridOffset(ERoomSocketDirection Direction) const
+{
+	switch (Direction)
+	{
+	case ERoomSocketDirection::North:
+		return FIntPoint(0, 1);
+	case ERoomSocketDirection::East:
+		return FIntPoint(1, 0);
+	case ERoomSocketDirection::South:
+		return FIntPoint(0, -1);
+	case ERoomSocketDirection::West:
+		return FIntPoint(-1, 0);
+	default:
+		return FIntPoint::ZeroValue;
+	}
+}
+
+bool AMapGenerationManager::FindSocketForDirection(
+	const FGeneratedRoom& Room,
+	ERoomSocketDirection Direction,
+	FRoomSocket& OutSocket
+) const
+{
+	if (!Room.RoomClass)
+	{
+		return false;
+	}
+
+	const ARoom* RoomCDO = Room.RoomClass->GetDefaultObject<ARoom>();
+	if (!RoomCDO)
+	{
+		return false;
+	}
+
+	for (const FRoomSocket& Socket : RoomCDO->Sockets)
+	{
+		if (Socket.Direction == Direction)
+		{
+			OutSocket = Socket;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void AMapGenerationManager::BuildCorridors()
+{
+	for (const FRoomEdge& Edge : FinalEdges)
+	{
+		if (!Edge.bHasDoors)
+		{
+			continue;
+		}
+
+		const FIntPoint Start = Edge.DoorA + DirectionToGridOffset(Edge.DoorDirectionA);
+		const FIntPoint End = Edge.DoorB + DirectionToGridOffset(Edge.DoorDirectionB);
+		const EGridCellType* StartType = GridMap.Find(Start);
+		const EGridCellType* EndType = GridMap.Find(End);
+
+		UE_LOG(LogTemp, Warning, TEXT("Corridor Edge %d-%d | DoorA(%d,%d) DirA=%d Start(%d,%d) StartType=%d | DoorB(%d,%d) DirB=%d End(%d,%d) EndType=%d"),
+			Edge.RoomIndexA,
+			Edge.RoomIndexB,
+			Edge.DoorA.X,
+			Edge.DoorA.Y,
+			static_cast<int32>(Edge.DoorDirectionA),
+			Start.X,
+			Start.Y,
+			StartType ? static_cast<int32>(*StartType) : -1,
+			Edge.DoorB.X,
+			Edge.DoorB.Y,
+			static_cast<int32>(Edge.DoorDirectionB),
+			End.X,
+			End.Y,
+			EndType ? static_cast<int32>(*EndType) : -1
+		);
+
+		const TArray<FIntPoint> HorizontalFirstPath = BuildLPath(Start, End, true);
+		const TArray<FIntPoint> VerticalFirstPath = BuildLPath(Start, End, false);
+
+		const int32 HorizontalFirstCost = CalculatePathCost(HorizontalFirstPath);
+		const int32 VerticalFirstCost = CalculatePathCost(VerticalFirstPath);
+
+		ApplyCorridorPath(HorizontalFirstCost <= VerticalFirstCost ? HorizontalFirstPath : VerticalFirstPath);
+	}
+}
+
+TArray<FIntPoint> AMapGenerationManager::BuildLPath(const FIntPoint& Start, const FIntPoint& End, bool bHorizontalFirst) const
+{
+	TArray<FIntPoint> Path;
+	FIntPoint Current = Start;
+	Path.Add(Current);
+
+	auto StepX = [&]()
+		{
+			const int32 Step = End.X > Current.X ? 1 : -1;
+			while (Current.X != End.X)
+			{
+				Current.X += Step;
+				Path.Add(Current);
+			}
+		};
+
+	auto StepY = [&]()
+		{
+			const int32 Step = End.Y > Current.Y ? 1 : -1;
+			while (Current.Y != End.Y)
+			{
+				Current.Y += Step;
+				Path.Add(Current);
+			}
+		};
+
+	if (bHorizontalFirst)
+	{
+		StepX();
+		StepY();
+	}
+	else
+	{
+		StepY();
+		StepX();
+	}
+
+	return Path;
+}
+
+int32 AMapGenerationManager::CalculatePathCost(const TArray<FIntPoint>& Path) const
+{
+	int32 Cost = 0;
+
+	for (const FIntPoint& Cell : Path)
+	{
+		const EGridCellType* CellType = GridMap.Find(Cell);
+
+		if (!CellType || *CellType == EGridCellType::Empty)
+		{
+			Cost += 1;
+			continue;
+		}
+
+		switch (*CellType)
+		{
+		case EGridCellType::Corridor:
+			Cost += 1;
+			break;
+		case EGridCellType::Door:
+			Cost += 1;
+			break;
+		case EGridCellType::Wall:
+			Cost += 50;
+			break;
+		case EGridCellType::Room:
+			Cost += 100;
+			break;
+		default:
+			Cost += 1;
+			break;
+		}
+	}
+
+	return Cost;
+}
+
+void AMapGenerationManager::ApplyCorridorPath(const TArray<FIntPoint>& Path)
+{
+	for (const FIntPoint& Cell : Path)
+	{
+		const EGridCellType* CellType = GridMap.Find(Cell);
+
+		if (CellType && (*CellType == EGridCellType::Door || *CellType == EGridCellType::Room || *CellType == EGridCellType::Wall))
+		{
+			continue;
+		}
+
+		GridMap.Add(Cell, EGridCellType::Corridor);
+	}
+}
+
+uint8 AMapGenerationManager::GetCellConnectionMask(const FIntPoint& Cell) const
+{
+	uint8 Mask = static_cast<uint8>(EGridConnectionMask::None);
+
+	auto HasConnection = [this](const FIntPoint& TargetCell)
+		{
+			const EGridCellType* CellType = GridMap.Find(TargetCell);
+			return CellType && (*CellType == EGridCellType::Corridor || *CellType == EGridCellType::Door);
+		};
+
+	if (HasConnection(Cell + FIntPoint(0, 1)))
+	{
+		Mask |= static_cast<uint8>(EGridConnectionMask::North);
+	}
+
+	if (HasConnection(Cell + FIntPoint(1, 0)))
+	{
+		Mask |= static_cast<uint8>(EGridConnectionMask::East);
+	}
+
+	if (HasConnection(Cell + FIntPoint(0, -1)))
+	{
+		Mask |= static_cast<uint8>(EGridConnectionMask::South);
+	}
+
+	if (HasConnection(Cell + FIntPoint(-1, 0)))
+	{
+		Mask |= static_cast<uint8>(EGridConnectionMask::West);
+	}
+
+	return Mask;
+}
+
+bool AMapGenerationManager::GetCorridorClassAndRotationFromMask(uint8 Mask, TSubclassOf<AActor>& OutClass, FRotator& OutRotation) const
+{
+	const uint8 North = static_cast<uint8>(EGridConnectionMask::North);
+	const uint8 East = static_cast<uint8>(EGridConnectionMask::East);
+	const uint8 South = static_cast<uint8>(EGridConnectionMask::South);
+	const uint8 West = static_cast<uint8>(EGridConnectionMask::West);
+
+	OutClass = nullptr;
+	OutRotation = FRotator::ZeroRotator;
+
+	if (Mask == (East | West))
+	{
+		OutClass = StraightCorridorClass;
+		OutRotation = FRotator(0.f, 0.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == (North | South))
+	{
+		OutClass = StraightCorridorClass;
+		OutRotation = FRotator(0.f, 90.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == (North | East))
+	{
+		OutClass = CornerCorridorClass;
+		OutRotation = FRotator(0.f, 0.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == (East | South))
+	{
+		OutClass = CornerCorridorClass;
+		OutRotation = FRotator(0.f, -90.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == (South | West))
+	{
+		OutClass = CornerCorridorClass;
+		OutRotation = FRotator(0.f, 180.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == (West | North))
+	{
+		OutClass = CornerCorridorClass;
+		OutRotation = FRotator(0.f, 90.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == (North | East | West))
+	{
+		OutClass = TJunctionCorridorClass;
+		OutRotation = FRotator(0.f, 0.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == (North | East | South))
+	{
+		OutClass = TJunctionCorridorClass;
+		OutRotation = FRotator(0.f, -90.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == (East | South | West))
+	{
+		OutClass = TJunctionCorridorClass;
+		OutRotation = FRotator(0.f, 180.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == (North | South | West))
+	{
+		OutClass = TJunctionCorridorClass;
+		OutRotation = FRotator(0.f, 90.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == (North | East | South | West))
+	{
+		OutClass = CrossCorridorClass;
+		OutRotation = FRotator::ZeroRotator;
+		return OutClass != nullptr;
+	}
+
+	if (Mask == North)
+	{
+		OutClass = DeadEndCorridorClass;
+		OutRotation = FRotator(0.f, 0.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == East)
+	{
+		OutClass = DeadEndCorridorClass;
+		OutRotation = FRotator(0.f, -90.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == South)
+	{
+		OutClass = DeadEndCorridorClass;
+		OutRotation = FRotator(0.f, 180.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	if (Mask == West)
+	{
+		OutClass = DeadEndCorridorClass;
+		OutRotation = FRotator(0.f, 90.f, 0.f);
+		return OutClass != nullptr;
+	}
+
+	return false;
+}
+
+void AMapGenerationManager::SpawnCorridors()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	for (AActor* Corridor : SpawnedCorridors)
+	{
+		if (IsValid(Corridor))
+		{
+			Corridor->Destroy();
+		}
+	}
+	SpawnedCorridors.Empty();
+
+	FActorSpawnParameters Params;
+	Params.Owner = this;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	for (const TPair<FIntPoint, EGridCellType>& Pair : GridMap)
+	{
+		if (Pair.Value != EGridCellType::Corridor)
+		{
+			continue;
+		}
+
+		TSubclassOf<AActor> CorridorClass;
+		FRotator CorridorRotation;
+		const uint8 Mask = GetCellConnectionMask(Pair.Key);
+
+		if (!GetCorridorClassAndRotationFromMask(Mask, CorridorClass, CorridorRotation))
+		{
+			continue;
+		}
+
+		const FVector2D CellWorld2D = GridToWorld2D(Pair.Key);
+		const FVector SpawnLocation(CellWorld2D.X, CellWorld2D.Y, 0.f);
+
+		AActor* SpawnedCorridor = GetWorld()->SpawnActor<AActor>(
+			CorridorClass,
+			SpawnLocation,
+			CorridorRotation,
+			Params
+		);
+
+		if (SpawnedCorridor)
+		{
+			SpawnedCorridors.Add(SpawnedCorridor);
+		}
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("Spawned Corridors: %d"), SpawnedCorridors.Num());
+}
+
+void AMapGenerationManager::DrawGridMap() const
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	const FVector BoxExtent(GridSize * 0.45f, GridSize * 0.45f, 20.f);
+
+	for (const TPair<FIntPoint, EGridCellType>& Pair : GridMap)
+	{
+		FColor CellColor = FColor::White;
+
+		switch (Pair.Value)
+		{
+		case EGridCellType::Room:
+			CellColor = FColor::Green;
+			break;
+		case EGridCellType::Wall:
+			CellColor = FColor::Silver;
+			break;
+		case EGridCellType::Door:
+			CellColor = FColor::Yellow;
+			break;
+		case EGridCellType::Corridor:
+			CellColor = FColor::Blue;
+			break;
+		default:
+			CellColor = FColor::White;
+			break;
+		}
+
+		const FVector2D CellWorld2D = GridToWorld2D(Pair.Key);
+		const FVector CellWorld(CellWorld2D.X, CellWorld2D.Y, 20.f);
+
+		DrawDebugBox(
+			GetWorld(),
+			CellWorld,
+			BoxExtent,
+			CellColor,
+			false,
+			30.0f,
+			0,
+			8.0f
+		);
+	}
+}
 void AMapGenerationManager::DrawEdges(const TArray<FRoomEdge>& Edges)
 {
 	for (int32 i = 0; i < Edges.Num(); ++i)
 	{
 		const FRoomEdge& Edge = Edges[i];
 
-		// 두 방의 위치
 		FVector StartPos = Rooms[Edge.RoomIndexA]->GetActorLocation();
 		FVector EndPos = Rooms[Edge.RoomIndexB]->GetActorLocation();
 
-		// 선 그리기
 		DrawDebugLine(
 			GetWorld(),
 			StartPos,
 			EndPos,
-			FColor::Cyan,        // 하늘색
-			false,               // Persistent (false = 시간제한 있음)
-			30.0f,               // 30초간 표시
-			0,                   // Depth priority
-			5.0f                 // 두께
+			FColor::Cyan,
+			false,
+			30.0f,
+			0,
+			5.0f
 		);
 
-		// 중점에 번호 표시 (옵션)
 		FVector MidPoint = (StartPos + EndPos) / 2.0f;
 		DrawDebugString(
 			GetWorld(),
 			MidPoint,
-			FString::Printf(TEXT("E%d"), i),  // Edge 번호
+			FString::Printf(TEXT("E%d"), i),
 			nullptr,
 			FColor::White,
 			30.0f,
@@ -651,50 +1216,3 @@ void AMapGenerationManager::DrawEdges(const TArray<FRoomEdge>& Edges)
 		);
 	}
 }
-
-
-//void AMapGenerationManager::GenerateRandomMap()
-//{
-//	FVector actorLocation = GetActorLocation();
-//	FVector SpawnLocation;
-//
-//	for (int i = 0; i < numOfRoom; i++)
-//	{
-//		//Spawn할 location 지정
-//		FVector2D randomLocation = GetRandomPointInCircle(radius);
-//		SpawnLocation = actorLocation + FVector(randomLocation, 0.f);
-//
-//		// SpawnActor 호출
-//		ARoom* room = GetWorld()->SpawnActor<ARoom>(
-//			RoomClass,
-//			SpawnLocation,
-//			FRotator::ZeroRotator
-//		);
-//
-//		//Room 배열에 추가
-//		Rooms.Add(room);
-//	}
-//}
-
-//bool AMapGenerationManager::AABBCollisionDetector(ARoom* RA, ARoom* RB)
-//{
-//	// Null 체크
-//	if (!RA || !RB || !RA->CollisionBox || !RB->CollisionBox)
-//	{
-//		return false;
-//	}
-//
-//	// 두 방의 중심 위치
-//	FVector CenterA = RA->GetActorLocation();
-//	FVector CenterB = RB->GetActorLocation();
-//
-//	// 두 방의 박스 크기
-//	FVector ExtentA = RA->CollisionBox->GetScaledBoxExtent() + 100.f;
-//	FVector ExtentB = RB->CollisionBox->GetScaledBoxExtent() + 100.f;
-//
-//	// AABB 충돌 검사 (2축 모두 겹쳐야 충돌)
-//	bool bOverlapX = FMath::Abs(CenterA.X - CenterB.X) < (ExtentA.X + ExtentB.X);
-//	bool bOverlapY = FMath::Abs(CenterA.Y - CenterB.Y) < (ExtentA.Y + ExtentB.Y);
-//
-//	return bOverlapX && bOverlapY;
-//}
